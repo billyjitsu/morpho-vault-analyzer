@@ -119,6 +119,37 @@ const VAULT_DETAIL_QUERY = `
         totalAssets
         fee
         curator
+        timelock
+        pendingConfigs {
+          items {
+            validAt
+            functionName
+            decodedData {
+              ... on VaultSetCapPendingData {
+                market {
+                  marketId
+                  loanAsset { symbol }
+                  collateralAsset { symbol }
+                }
+                supplyCap
+              }
+              ... on VaultSetTimelockPendingData {
+                timelock
+              }
+              ... on VaultSetGuardianPendingData {
+                guardian { address }
+              }
+              ... on VaultRemoveMarketPendingData {
+                market {
+                  marketId
+                  loanAsset { symbol }
+                  collateralAsset { symbol }
+                }
+              }
+            }
+            txHash
+          }
+        }
         allocation {
           market {
             marketId
@@ -145,6 +176,8 @@ const VAULT_DETAIL_QUERY = `
           supplyAssets
           supplyShares
           supplyCap
+          pendingSupplyCap
+          pendingSupplyCapValidAt
         }
       }
     }
@@ -169,6 +202,20 @@ interface MarketAllocation {
   supplyAssets: string;
   supplyShares: string;
   supplyCap: string;
+  pendingSupplyCap: string | null;
+  pendingSupplyCapValidAt: string | null;
+}
+
+interface PendingConfigItem {
+  validAt: string;
+  functionName: string;
+  decodedData: {
+    market?: { marketId: string; loanAsset: { symbol: string }; collateralAsset: { symbol: string } | null };
+    supplyCap?: string;
+    timelock?: string;
+    guardian?: { address: string };
+  } | null;
+  txHash: string;
 }
 
 interface VaultDetailResponse {
@@ -181,9 +228,21 @@ interface VaultDetailResponse {
       totalAssets: string;
       fee: number;
       curator: string;
+      timelock: string;
+      pendingConfigs: { items: PendingConfigItem[] };
       allocation: MarketAllocation[];
     } | null;
   } | null;
+}
+
+export interface DexPoolInfo {
+  poolAddress: string;
+  feeTier: number;
+  feeLabel: string;
+  token0: { address: string; symbol: string; balance: string };
+  token1: { address: string; symbol: string; balance: string };
+  isRouteLeg: boolean;
+  routeVia?: string;
 }
 
 export interface MarketRiskData {
@@ -200,9 +259,22 @@ export interface MarketRiskData {
   collateralRiskLabel: string;
   isRecursive: boolean;
   hasDexLiquidity: boolean;
+  dexLiquidityType: "direct" | "routed" | "none";
+  dexRouteDetail: string;
   dexPoolCount: number;
+  dexPools: DexPoolInfo[];
+  totalBorrowUsd: number;
   utilizationRisk: string;
   lltvRisk: string;
+}
+
+export interface PendingAction {
+  type: "SetCap" | "SetTimelock" | "SetGuardian" | "RemoveMarket" | string;
+  validAt: number; // unix seconds
+  description: string;
+  marketLabel?: string;
+  newValue?: string;
+  txHash: string;
 }
 
 export interface VaultRiskResult {
@@ -211,8 +283,10 @@ export interface VaultRiskResult {
   symbol: string;
   asset: { address: string; symbol: string; decimals: number };
   fee: number;
+  timelock: number;
   tvlFormatted: string;
   markets: MarketRiskData[];
+  pendingActions: PendingAction[];
 }
 
 export async function fetchVaultDetailFromAPI(vaultAddress: string): Promise<VaultRiskResult | null> {
@@ -226,6 +300,43 @@ export async function fetchVaultDetailFromAPI(vaultAddress: string): Promise<Vau
 
   const decimals = v.asset.decimals;
   const tvl = formatBigInt(BigInt(v.state.totalAssets), decimals);
+  const timelockSecs = Number(v.state.timelock ?? 0);
+
+  // Parse pending actions from the API
+  const pendingActions: PendingAction[] = (v.state.pendingConfigs?.items ?? []).map((item) => {
+    const dd = item.decodedData;
+    const mktLabel = dd?.market
+      ? `${dd.market.loanAsset.symbol} / ${dd.market.collateralAsset?.symbol ?? "Idle"}`
+      : undefined;
+
+    let description = item.functionName;
+    let newValue: string | undefined;
+
+    if (item.functionName === "SetCap" && dd?.supplyCap != null) {
+      const capNum = Number(BigInt(dd.supplyCap)) / 10 ** decimals;
+      newValue = `$${capNum >= 1_000_000 ? `${(capNum / 1_000_000).toFixed(2)}M` : capNum >= 1_000 ? `${(capNum / 1_000).toFixed(1)}K` : capNum.toFixed(2)}`;
+      description = `New supply cap → ${newValue}`;
+    } else if (item.functionName === "SetTimelock" && dd?.timelock != null) {
+      const hrs = Number(dd.timelock) / 3600;
+      newValue = hrs >= 24 ? `${(hrs / 24).toFixed(1)}d` : `${hrs.toFixed(1)}h`;
+      description = `New timelock → ${newValue}`;
+    } else if (item.functionName === "SetGuardian" && dd?.guardian) {
+      const addr = dd.guardian.address;
+      newValue = addr;
+      description = `New guardian → ${addr.slice(0, 6)}…${addr.slice(-4)}`;
+    } else if (item.functionName === "RemoveMarket") {
+      description = "Remove market";
+    }
+
+    return {
+      type: item.functionName,
+      validAt: Number(item.validAt),
+      description,
+      marketLabel: mktLabel,
+      newValue,
+      txHash: item.txHash,
+    };
+  });
 
   const markets: MarketRiskData[] = v.state.allocation.map((alloc) => {
     const m = alloc.market;
@@ -253,7 +364,11 @@ export async function fetchVaultDetailFromAPI(vaultAddress: string): Promise<Vau
       collateralRiskLabel: "Unknown",
       isRecursive: cs.startsWith("yv") || cs.startsWith("PT-") || cs === "yUSD",
       hasDexLiquidity: false, // filled by caller via RPC
+      dexLiquidityType: "none" as const,
+      dexRouteDetail: "",
       dexPoolCount: 0,
+      dexPools: [],
+      totalBorrowUsd: 0, // filled by caller with price estimation
       utilizationRisk: ut >= 0.99 ? "critical" : ut >= 0.9 ? "high" : ut >= 0.8 ? "medium" : "low",
       lltvRisk: lltv >= 0.9 ? "high" : lltv >= 0.8 ? "medium" : "low",
     };
@@ -265,8 +380,10 @@ export async function fetchVaultDetailFromAPI(vaultAddress: string): Promise<Vau
     symbol: v.symbol,
     asset: v.asset,
     fee: v.state.fee * 100,
+    timelock: timelockSecs,
     tvlFormatted: tvl,
     markets,
+    pendingActions,
   };
 }
 

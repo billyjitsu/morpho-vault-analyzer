@@ -12,6 +12,15 @@ interface VaultListItem {
   fee: string;
 }
 
+function feeColor(fee: string): string {
+  const n = parseFloat(fee);
+  if (n <= 0) return "text-emerald-400";
+  if (n <= 2) return "text-emerald-300";
+  if (n <= 5) return "text-amber-400";
+  if (n <= 7) return "text-orange-400";
+  return "text-red-400";
+}
+
 function formatTvl(tvl: string): string {
   const n = Number(tvl);
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
@@ -49,7 +58,7 @@ export function VaultCard({
         <div className="min-w-0">
           <h3 className="font-semibold text-zinc-100 truncate">{vault.name}</h3>
           <p className="text-xs text-zinc-500 mt-0.5">
-            {curatorName(vault.curator)} &middot; {vault.fee} fee &middot; {vault.asset.symbol}
+            {curatorName(vault.curator)} &middot; <span className={feeColor(vault.fee)}>{vault.fee} fee</span> &middot; {vault.asset.symbol}
           </p>
         </div>
         <div className="text-right shrink-0">

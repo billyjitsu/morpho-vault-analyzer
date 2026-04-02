@@ -25,6 +25,7 @@ export function Dashboard() {
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [minTvl, setMinTvl] = useState<number>(0);
 
   useEffect(() => {
     fetch("/api/vaults")
@@ -60,8 +61,9 @@ export function Dashboard() {
   }, [analyses]);
 
   const filteredVaults = vaults.filter((v) => {
-    if (filter === "all") return true;
-    return v.asset.symbol.toLowerCase().includes(filter.toLowerCase());
+    if (filter !== "all" && !v.asset.symbol.toLowerCase().includes(filter.toLowerCase())) return false;
+    if (minTvl > 0 && Number(v.tvl) < minTvl) return false;
+    return true;
   });
 
   const uniqueAssets = [...new Set(vaults.map((v) => v.asset.symbol))];
@@ -92,26 +94,50 @@ export function Dashboard() {
   return (
     <>
       {/* Filters */}
-      <div className="flex items-center gap-2 mb-6 flex-wrap">
-        <button
-          onClick={() => setFilter("all")}
-          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-            filter === "all" ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
-          }`}
-        >
-          All ({vaults.length})
-        </button>
-        {uniqueAssets.map((asset) => (
+      <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
-            key={asset}
-            onClick={() => setFilter(asset)}
+            onClick={() => setFilter("all")}
             className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-              filter === asset ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+              filter === "all" ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            {asset} ({vaults.filter((v) => v.asset.symbol === asset).length})
+            All ({vaults.length})
           </button>
-        ))}
+          {uniqueAssets.map((asset) => (
+            <button
+              key={asset}
+              onClick={() => setFilter(asset)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                filter === asset ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {asset} ({vaults.filter((v) => v.asset.symbol === asset).length})
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Min TVL</span>
+          <div className="flex items-center gap-1">
+            {[
+              { label: "All", value: 0 },
+              { label: "$1K", value: 1_000 },
+              { label: "$10K", value: 10_000 },
+              { label: "$100K", value: 100_000 },
+              { label: "$1M", value: 1_000_000 },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setMinTvl(opt.value)}
+                className={`rounded-md px-2 py-1 text-xs font-mono transition-colors ${
+                  minTvl === opt.value ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Vault Grid */}
