@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { RiskBadge, UtilizationGauge } from "./RiskBadge";
 
 interface PoolInfo {
@@ -112,6 +113,143 @@ function DexBadge({ has, type, routeDetail, count }: { has: boolean; type: strin
   );
 }
 
+function WithdrawalSimulator({ data }: { data: VaultAnalysis }) {
+  const [input, setInput] = useState("");
+  const amount = Number(input) || 0;
+
+  if (amount <= 0) {
+    return (
+      <div className="px-6 pt-2">
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+          <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Withdrawal Simulator</p>
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <input
+                type="number"
+                placeholder={`Enter amount in ${data.asset.symbol}...`}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono text-zinc-200 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+              />
+            </div>
+            <span className="text-xs text-zinc-500 shrink-0">{data.asset.symbol}</span>
+          </div>
+          <p className="text-[10px] text-zinc-600 mt-2">Enter an amount to check if you could fully withdraw</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Calculate per-market withdrawable (withdraw queue order)
+  const tvl = Number(data.tvlFormatted);
+  const totalWithdrawable = Number(data.withdrawalLiquidity.totalAvailableFormatted);
+  const depositShare = tvl > 0 ? amount / (tvl + amount) : 0;
+
+  // Per-market breakdown
+  const marketBreakdown = data.markets.map((m) => {
+    const vaultSupply = Number(m.vaultSupplyAssets);
+    const available = Number(m.availableLiquidity);
+    const withdrawable = Math.min(vaultSupply, available);
+    const locked = vaultSupply - withdrawable;
+    const label = m.collateralToken
+      ? `${m.loanToken.symbol} / ${m.collateralToken.symbol}`
+      : `${m.loanToken.symbol} idle`;
+    return { label, vaultSupply, available, withdrawable, locked, utilization: m.utilization, isIdle: !m.collateralToken };
+  }).filter((m) => m.vaultSupply > 0);
+
+  // The user's pro-rata share of each market's withdrawable
+  const userWithdrawable = marketBreakdown.reduce((sum, m) => {
+    const userShare = tvl > 0 ? (amount / (tvl + amount)) * m.vaultSupply : 0;
+    return sum + Math.min(userShare, m.withdrawable);
+  }, 0);
+
+  // Can also withdraw from fresh deposit liquidity (not yet deployed)
+  // Simplification: compare against current total withdrawable scaled by share
+  const canFullyWithdraw = amount <= totalWithdrawable;
+  const withdrawPct = amount > 0 ? Math.min((totalWithdrawable / amount) * 100, 100) : 0;
+  const atRiskAmount = canFullyWithdraw ? 0 : amount - totalWithdrawable;
+
+  return (
+    <div className="px-6 pt-2">
+      <div className={`rounded-lg border p-4 ${canFullyWithdraw ? "border-emerald-500/30 bg-emerald-500/5" : "border-red-500/30 bg-red-500/5"}`}>
+        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Withdrawal Simulator</p>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="relative flex-1">
+            <input
+              type="number"
+              placeholder={`Enter amount in ${data.asset.symbol}...`}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono text-zinc-200 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+            />
+          </div>
+          <span className="text-xs text-zinc-500 shrink-0">{data.asset.symbol}</span>
+        </div>
+
+        {/* Result */}
+        <div className={`rounded-lg p-3 mb-3 ${canFullyWithdraw ? "bg-emerald-500/10" : "bg-red-500/10"}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-semibold ${canFullyWithdraw ? "text-emerald-400" : "text-red-400"}`}>
+                {canFullyWithdraw ? "Full withdrawal possible" : "Partial withdrawal only"}
+              </span>
+            </div>
+            <span className={`text-sm font-mono font-semibold ${canFullyWithdraw ? "text-emerald-400" : "text-red-400"}`}>
+              {withdrawPct.toFixed(1)}%
+            </span>
+          </div>
+          {!canFullyWithdraw && (
+            <p className="text-xs text-red-300 mt-1">
+              {formatNum(atRiskAmount.toString())} {data.asset.symbol} would be locked in high-utilization markets
+            </p>
+          )}
+          {canFullyWithdraw && (
+            <p className="text-xs text-emerald-300 mt-1">
+              Current available liquidity ({formatNum(totalWithdrawable.toString())} {data.asset.symbol}) covers your full position
+            </p>
+          )}
+        </div>
+
+        {/* Per-market breakdown */}
+        <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1.5">Market Liquidity Breakdown</p>
+        <div className="space-y-1">
+          {marketBreakdown.map((m) => {
+            const userShare = tvl > 0 ? (amount / (tvl + amount)) * m.vaultSupply : 0;
+            const userCanWithdraw = Math.min(userShare, m.withdrawable);
+            const userLocked = Math.max(userShare - m.withdrawable, 0);
+            const pct = userShare > 0 ? (userCanWithdraw / userShare) * 100 : 100;
+
+            return (
+              <div key={m.label} className="flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${pct >= 100 ? "bg-emerald-400" : pct >= 50 ? "bg-amber-400" : "bg-red-400"}`} />
+                  <span className="text-zinc-400 truncate">{m.label}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0 font-mono">
+                  {userLocked > 0 && (
+                    <span className="text-red-400 text-[10px]">{formatNum(userLocked.toString())} locked</span>
+                  )}
+                  <span className="text-zinc-300">
+                    {formatNum(userCanWithdraw.toString())}
+                    <span className="text-zinc-600"> / {formatNum(userShare.toString())}</span>
+                  </span>
+                  <span className={`w-10 text-right ${pct >= 100 ? "text-emerald-400" : pct >= 50 ? "text-amber-400" : "text-red-400"}`}>
+                    {pct.toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <p className="text-[10px] text-zinc-600 mt-2">
+          Based on current liquidity. Your {formatNum(amount.toString())} {data.asset.symbol} deposit = {(depositShare * 100).toFixed(2)}% vault share. Utilization changes over time may affect withdrawability.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function VaultDetail({ data, onClose }: { data: VaultAnalysis; onClose: () => void }) {
   const activeMarkets = data.markets.filter((m) => m.collateralToken);
   const idleMarkets = data.markets.filter((m) => !m.collateralToken);
@@ -183,6 +321,9 @@ export function VaultDetail({ data, onClose }: { data: VaultAnalysis; onClose: (
             </div>
           )}
         </div>
+
+        {/* Withdrawal Simulator */}
+        <WithdrawalSimulator data={data} />
 
         {/* Pending Actions */}
         {data.pendingActions && data.pendingActions.length > 0 && (
